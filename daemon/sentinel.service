@@ -1,0 +1,30 @@
+[Unit]
+Description=Sentinel Endpoint Security Daemon
+Documentation=https://github.com/CS-Fasih/Endpoint-Security-Quarantine-Tool-for-Linux
+After=network.target clamav-daemon.service
+Wants=clamav-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sentinel-daemon
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Run as root (required for inotify on /home, quarantine ops)
+User=root
+Group=root
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/opt/quarantine /var/log
+PrivateTmp=false
+NoNewPrivileges=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinel
+
+[Install]
+WantedBy=multi-user.target
