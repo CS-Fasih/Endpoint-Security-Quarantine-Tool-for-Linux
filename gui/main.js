@@ -1,24 +1,30 @@
 /**
- * main.js — Electron main process for the Sentinel GUI.
+ * main.js — Electron main process for the Sentinel GUI (refactored).
  *
- * Creates the BrowserWindow, establishes a WebSocket connection to the
- * Sentinel daemon, and forwards alerts to the renderer via IPC.
+ * Architectural fixes:
+ *   Fix 2: Uses Node.js `net` module to connect to the daemon's UNIX
+ *          domain socket instead of a TCP WebSocket.
+ *   Fix 4: On connect, sends {"action":"sync_state"} to request the
+ *          full quarantine manifest from the daemon.
+ *
+ * Protocol: newline-delimited JSON over UNIX stream socket.
  */
 
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const WebSocket = require('ws');
+const net = require('net');
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 
-const WS_URL = 'ws://127.0.0.1:9800';
-const WS_RECONNECT_MS = 3000;
+const SOCKET_PATH = '/var/run/sentinel_gui.sock';
+const RECONNECT_MS = 3000;
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 
 let mainWindow = null;
-let ws = null;
-let wsRetryTimer = null;
+let client = null;   /* net.Socket connected to daemon */
+let retryTimer = null;
+let recvBuffer = '';     /* Accumulates partial reads for line framing */
 
 /* ── Window creation ────────────────────────────────────────────────────── */
 
@@ -46,47 +52,81 @@ function createWindow() {
     });
 }
 
-/* ── WebSocket connection to Sentinel daemon ────────────────────────────── */
+/* ── UNIX domain socket connection to daemon ────────────────────────────── */
 
-function connectWebSocket() {
-    if (ws) {
-        try { ws.close(); } catch (e) { /* ignore */ }
+function connectDaemon() {
+    /* Clean up any existing connection. */
+    if (client) {
+        try { client.destroy(); } catch (e) { /* ignore */ }
+        client = null;
     }
+    recvBuffer = '';
 
-    ws = new WebSocket(WS_URL, { handshakeTimeout: 5000 });
+    client = net.createConnection({ path: SOCKET_PATH });
 
-    ws.on('open', () => {
-        console.log('[WS] Connected to daemon');
+    client.on('connect', () => {
+        console.log('[IPC] Connected to daemon via', SOCKET_PATH);
         sendToRenderer('ws-status', { connected: true });
+
+        /* Fix 4: Request full quarantine state on connect. */
+        sendToDaemon({ action: 'sync_state' });
     });
 
-    ws.on('message', (data) => {
-        try {
-            const payload = JSON.parse(data.toString());
-            console.log('[WS] Alert:', payload.event);
-            sendToRenderer('alert', payload);
-        } catch (err) {
-            console.error('[WS] Parse error:', err.message);
+    client.on('data', (chunk) => {
+        /*
+         * Newline-delimited JSON framing.
+         * Accumulate data and split on '\n' to handle partial reads.
+         */
+        recvBuffer += chunk.toString();
+        const lines = recvBuffer.split('\n');
+
+        /* Last element is either an empty string (complete messages) or
+         * a partial message — keep it in the buffer. */
+        recvBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const payload = JSON.parse(line);
+                console.log('[IPC] Event:', payload.event);
+                sendToRenderer('alert', payload);
+            } catch (err) {
+                console.error('[IPC] Parse error:', err.message, 'raw:', line);
+            }
         }
     });
 
-    ws.on('close', () => {
-        console.log('[WS] Disconnected — retrying in', WS_RECONNECT_MS, 'ms');
+    client.on('close', () => {
+        console.log('[IPC] Disconnected — retrying in', RECONNECT_MS, 'ms');
         sendToRenderer('ws-status', { connected: false });
+        client = null;
         scheduleReconnect();
     });
 
-    ws.on('error', (err) => {
-        console.error('[WS] Error:', err.message);
-        /* 'close' event will fire after this → triggers reconnect. */
+    client.on('error', (err) => {
+        /* ENOENT: socket file doesn't exist yet (daemon not running).
+         * ECONNREFUSED: daemon crashed.  Both trigger 'close' → reconnect. */
+        if (err.code !== 'ENOENT' && err.code !== 'ECONNREFUSED') {
+            console.error('[IPC] Error:', err.message);
+        }
     });
 }
 
 function scheduleReconnect() {
-    if (wsRetryTimer) clearTimeout(wsRetryTimer);
-    wsRetryTimer = setTimeout(() => {
-        connectWebSocket();
-    }, WS_RECONNECT_MS);
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+        connectDaemon();
+    }, RECONNECT_MS);
+}
+
+/**
+ * Send a JSON object to the daemon over the UNIX socket.
+ * Appends the newline delimiter automatically.
+ */
+function sendToDaemon(obj) {
+    if (client && !client.destroyed) {
+        client.write(JSON.stringify(obj) + '\n');
+    }
 }
 
 function sendToRenderer(channel, data) {
@@ -95,15 +135,15 @@ function sendToRenderer(channel, data) {
     }
 }
 
-/* ── IPC handlers (GUI → Daemon) ────────────────────────────────────────── */
+/* ── IPC handlers (GUI renderer → Daemon) ───────────────────────────────── */
 
 ipcMain.on('action', (_event, payload) => {
     /*
-     * Forward user actions (restore / delete) to the daemon over WebSocket.
-     * Expected payload: { action: "restore"|"delete", id: "<quarantine_id>" }
+     * Forward user actions (restore / delete / sync_state) to the daemon.
+     * Expected payload: { action: "restore"|"delete"|"sync_state", id: "..." }
      */
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(payload));
+    if (client && !client.destroyed) {
+        sendToDaemon(payload);
         console.log('[IPC] Sent action to daemon:', payload);
     } else {
         console.warn('[IPC] Daemon not connected — action dropped:', payload);
@@ -114,7 +154,7 @@ ipcMain.on('action', (_event, payload) => {
 
 app.whenReady().then(() => {
     createWindow();
-    connectWebSocket();
+    connectDaemon();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -122,7 +162,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-    if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
-    if (wsRetryTimer) clearTimeout(wsRetryTimer);
+    if (client) { try { client.destroy(); } catch (e) { /* ignore */ } }
+    if (retryTimer) clearTimeout(retryTimer);
     app.quit();
 });

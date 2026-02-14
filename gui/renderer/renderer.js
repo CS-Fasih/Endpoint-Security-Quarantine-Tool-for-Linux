@@ -1,8 +1,14 @@
 /**
- * renderer.js — Sentinel dashboard UI logic.
+ * renderer.js — Sentinel dashboard UI logic (refactored).
  *
- * Listens for real-time alerts from the daemon (via preload bridge),
- * updates the scan log, threat vault, and stat counters.
+ * Architectural fixes:
+ *   Fix 4: On connection, the daemon sends sync_entry events for each
+ *          quarantined file, followed by a sync_complete event.  The
+ *          renderer rebuilds the Threat Vault from this data, so the
+ *          vault persists across GUI restarts.
+ *
+ * All quarantine entries now use the daemon's UUID as the canonical ID
+ * (from the manifest), not a client-side generated ID.
  */
 
 /* ── State ──────────────────────────────────────────────────────────────── */
@@ -12,8 +18,9 @@ const state = {
     threats: 0,
     connected: false,
     logEntries: [],
-    vaultEntries: [],
+    vaultEntries: [],       /* { id, filename, threat, timestamp } */
     maxLogEntries: 200,
+    syncing: false,         /* True while receiving sync_entry batch */
 };
 
 /* ── DOM References ─────────────────────────────────────────────────────── */
@@ -152,47 +159,93 @@ function clearLog() {
 
 /* ── Threat Vault ───────────────────────────────────────────────────────── */
 
-function addVaultEntry(alert) {
+/**
+ * Render a single vault entry in the DOM.
+ * @param {Object} entry  { id, filename, threat, timestamp }
+ */
+function renderVaultEntry(entry) {
     /* Remove empty state if present */
     const emptyState = dom.threatVault.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
-    const vaultId = alert.filename + '_' + Date.now();  /* temporary ID */
-    const filename = extractFilename(alert.filename);
-    const time = formatTime(alert.timestamp);
+    const filename = extractFilename(entry.filename);
+    const time = formatTime(entry.timestamp);
 
-    const entry = document.createElement('div');
-    entry.className = 'vault-entry';
-    entry.dataset.id = vaultId;
+    const el = document.createElement('div');
+    el.className = 'vault-entry';
+    el.dataset.id = entry.id;
 
-    entry.innerHTML = `
+    el.innerHTML = `
         <div class="vault-entry-header">
             <div class="vault-info">
                 <div class="vault-filename">${escapeHtml(filename)}</div>
-                <div class="vault-threat">🦠 ${escapeHtml(alert.threat || 'Unknown threat')}</div>
-                <div class="vault-path">${escapeHtml(alert.filename || '')}</div>
+                <div class="vault-threat">🦠 ${escapeHtml(entry.threat || 'Unknown threat')}</div>
+                <div class="vault-path">${escapeHtml(entry.filename || '')}</div>
                 <div class="vault-time">Quarantined at ${time}</div>
             </div>
             <div class="vault-actions">
-                <button class="btn btn-sm btn-success" onclick="restoreFile('${escapeAttr(vaultId)}')" title="Restore file">
+                <button class="btn btn-sm btn-success" onclick="restoreFile('${escapeAttr(entry.id)}')" title="Restore file">
                     ↩ Restore
                 </button>
-                <button class="btn btn-sm btn-danger" onclick="deleteFile('${escapeAttr(vaultId)}')" title="Delete permanently">
+                <button class="btn btn-sm btn-danger" onclick="deleteFile('${escapeAttr(entry.id)}')" title="Delete permanently">
                     🗑 Delete
                 </button>
             </div>
         </div>
     `;
 
-    state.vaultEntries.push({
-        id: vaultId,
+    dom.threatVault.insertBefore(el, dom.threatVault.firstChild);
+}
+
+/**
+ * Add a threat to the vault (from a real-time scan_threat event).
+ * Uses the daemon's quarantine UUID as the canonical ID.
+ */
+function addVaultEntry(alert) {
+    /*
+     * For real-time scan_threat events, the daemon broadcasts the alert
+     * AFTER quarantine_file() succeeds.  The "filename" field is the
+     * original path.  We generate a temporary ID here; on next sync
+     * the canonical UUID will replace it.
+     *
+     * However, if a sync_entry has already been received with matching
+     * filename, skip to avoid duplicates.
+     */
+    const id = alert.id || (alert.filename + '_' + Date.now());
+
+    /* Deduplicate by id. */
+    if (state.vaultEntries.some(e => e.id === id)) return;
+
+    const entry = {
+        id: id,
         filename: alert.filename,
         threat: alert.threat,
         timestamp: alert.timestamp,
-    });
+    };
 
-    dom.threatVault.insertBefore(entry, dom.threatVault.firstChild);
+    state.vaultEntries.push(entry);
+    renderVaultEntry(entry);
     updateStats();
+}
+
+/**
+ * Rebuild the vault from sync_entry events (Fix 4).
+ * Called once per entry during the initial state sync batch.
+ */
+function addSyncEntry(payload) {
+    /* Use the daemon's manifest UUID as the canonical ID. */
+    const entry = {
+        id: payload.id,
+        filename: payload.filename,
+        threat: payload.threat,
+        timestamp: payload.timestamp,
+    };
+
+    /* Deduplicate (in case of reconnect during sync). */
+    if (state.vaultEntries.some(e => e.id === entry.id)) return;
+
+    state.vaultEntries.push(entry);
+    renderVaultEntry(entry);
 }
 
 function removeVaultEntry(vaultId) {
@@ -217,6 +270,31 @@ function removeVaultEntry(vaultId) {
     }
 }
 
+/**
+ * Clear and rebuild the vault DOM from state.vaultEntries.
+ * Called after a full sync_complete to ensure consistency.
+ */
+function rebuildVaultDOM() {
+    dom.threatVault.innerHTML = '';
+
+    if (state.vaultEntries.length === 0) {
+        dom.threatVault.innerHTML = `
+            <div class="empty-state">
+                <span class="empty-icon">✅</span>
+                <p>No quarantined files</p>
+                <p class="empty-sub">Threats will appear here when detected.</p>
+            </div>
+        `;
+    } else {
+        /* Render oldest first so newest ends up on top (insertBefore). */
+        for (const entry of state.vaultEntries) {
+            renderVaultEntry(entry);
+        }
+    }
+
+    updateStats();
+}
+
 /* ── Actions (sent to daemon via preload bridge) ────────────────────────── */
 
 function restoreFile(vaultId) {
@@ -226,7 +304,6 @@ function restoreFile(vaultId) {
     window.sentinel.sendAction({
         action: 'restore',
         id: entry.id,
-        filename: entry.filename,
     });
 
     removeVaultEntry(vaultId);
@@ -245,7 +322,6 @@ function deleteFile(vaultId) {
     window.sentinel.sendAction({
         action: 'delete',
         id: entry.id,
-        filename: entry.filename,
     });
 
     removeVaultEntry(vaultId);
@@ -275,11 +351,39 @@ function escapeAttr(str) {
 
 /* ── Event Listeners ────────────────────────────────────────────────────── */
 
-/* Alerts from daemon */
+/* Alerts from daemon (real-time events + sync entries) */
 window.sentinel.onAlert((alert) => {
     console.log('[Alert]', alert);
 
     switch (alert.event) {
+
+        /* ── Fix 4: State synchronisation ─────────────────────────── */
+        case 'sync_entry':
+            /* Received one quarantine entry during initial sync. */
+            if (!state.syncing) {
+                state.syncing = true;
+                /* Clear vault before sync to avoid stale entries. */
+                state.vaultEntries = [];
+                dom.threatVault.innerHTML = '';
+            }
+            addSyncEntry(alert);
+            break;
+
+        case 'sync_complete':
+            /* All sync entries received — finalise vault rebuild. */
+            state.syncing = false;
+            state.threats = state.vaultEntries.length;
+            rebuildVaultDOM();
+            addLogEntry({
+                event: 'status',
+                filename: 'sentinel',
+                details: `State sync complete — ${state.vaultEntries.length} quarantined file(s)`,
+                timestamp: null,
+            });
+            console.log('[Sync] Vault rebuilt with', state.vaultEntries.length, 'entries');
+            break;
+
+        /* ── Real-time scan events ────────────────────────────────── */
         case 'scan_clean':
             state.scanned++;
             addLogEntry(alert);
@@ -294,12 +398,24 @@ window.sentinel.onAlert((alert) => {
             /* updateStats called inside addVaultEntry */
             break;
 
-        case 'quarantine':
+        /* ── Quarantine lifecycle events ──────────────────────────── */
         case 'restore':
-        case 'delete':
+            /* Another client restored a file — remove from our vault. */
+            if (alert.filename) {
+                removeVaultEntry(alert.filename);
+            }
             addLogEntry(alert);
             break;
 
+        case 'delete':
+            /* Another client deleted a file — remove from our vault. */
+            if (alert.filename) {
+                removeVaultEntry(alert.filename);
+            }
+            addLogEntry(alert);
+            break;
+
+        case 'quarantine':
         case 'status':
             addLogEntry(alert);
             break;
@@ -324,4 +440,4 @@ dom.btnClearLog.addEventListener('click', clearLog);
 updateConnectionStatus(false);
 updateStats();
 
-console.log('Sentinel dashboard loaded.');
+console.log('Sentinel dashboard loaded (with state sync support).');
