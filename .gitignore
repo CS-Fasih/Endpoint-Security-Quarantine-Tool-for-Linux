@@ -1,0 +1,22 @@
+# Build artifacts
+daemon/sentinel-daemon
+daemon/*.o
+daemon/src/*.o
+
+# Node
+gui/node_modules/
+gui/package-lock.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
