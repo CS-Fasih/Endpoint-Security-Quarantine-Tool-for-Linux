@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
+    <title>Sentinel — Endpoint Security</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ═══ Title Bar ══════════════════════════════════════════════════ -->
+    <header id="titlebar">
+        <div class="titlebar-left">
+            <div class="app-icon">🛡️</div>
+            <span class="app-name">Sentinel</span>
+            <span class="app-tag">Endpoint Security</span>
+        </div>
+        <div class="titlebar-right">
+            <div id="connection-indicator" class="status-dot disconnected" title="Daemon disconnected"></div>
+            <span id="connection-text" class="status-text">Disconnected</span>
+        </div>
+    </header>
+
+    <!-- ═══ Main Content ═══════════════════════════════════════════════ -->
+    <main id="app">
+
+        <!-- ── Stats Bar ───────────────────────────────────────────── -->
+        <section id="stats-bar">
+            <div class="stat-card">
+                <div class="stat-icon shield-icon">🛡️</div>
+                <div class="stat-content">
+                    <span class="stat-label">Protection</span>
+                    <span id="stat-protection" class="stat-value active">Active</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon scan-icon">🔍</div>
+                <div class="stat-content">
+                    <span class="stat-label">Files Scanned</span>
+                    <span id="stat-scanned" class="stat-value">0</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon threat-icon">⚠️</div>
+                <div class="stat-content">
+                    <span class="stat-label">Threats Found</span>
+                    <span id="stat-threats" class="stat-value">0</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon vault-icon">🔒</div>
+                <div class="stat-content">
+                    <span class="stat-label">Quarantined</span>
+                    <span id="stat-quarantined" class="stat-value">0</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Panels ──────────────────────────────────────────────── -->
+        <div id="panels">
+
+            <!-- Scan Log Panel -->
+            <section id="scan-log-panel" class="panel">
+                <div class="panel-header">
+                    <h2>📋 Real-Time Scan Log</h2>
+                    <button id="btn-clear-log" class="btn btn-ghost" title="Clear log">Clear</button>
+                </div>
+                <div id="scan-log" class="panel-body scrollable">
+                    <div class="empty-state">
+                        <span class="empty-icon">🔍</span>
+                        <p>Waiting for scan events...</p>
+                        <p class="empty-sub">Files in <code>/home</code> and <code>/tmp</code> are being monitored.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Threat Vault Panel -->
+            <section id="threat-vault-panel" class="panel">
+                <div class="panel-header">
+                    <h2>🔒 Threat Vault</h2>
+                    <span id="vault-count" class="badge">0</span>
+                </div>
+                <div id="threat-vault" class="panel-body scrollable">
+                    <div class="empty-state">
+                        <span class="empty-icon">✅</span>
+                        <p>No quarantined files</p>
+                        <p class="empty-sub">Threats will appear here when detected.</p>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </main>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
