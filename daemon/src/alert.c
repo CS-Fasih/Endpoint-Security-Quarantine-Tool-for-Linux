@@ -46,7 +46,7 @@ typedef struct {
 /* ── Private state ──────────────────────────────────────────────────────── */
 
 static int           s_listen_fd    = -1;
-static char          s_socket_path[256];
+static char          s_socket_path[108];   /* Matches sizeof(sun_path) */
 static client_slot_t s_clients[ALERT_MAX_CLIENTS];
 static int           s_client_count = 0;
 static pthread_mutex_t s_alert_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -221,7 +221,7 @@ int alert_server_init(const char *socket_path)
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, s_socket_path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s_socket_path);
 
     if (bind(s_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         log_error("bind(%s): %s", s_socket_path, strerror(errno));

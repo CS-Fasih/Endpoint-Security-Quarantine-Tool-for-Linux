@@ -6,6 +6,7 @@
  */
 
 #include "scanner.h"
+#include "quarantine.h"
 #include "logger.h"
 
 #include <stdio.h>
@@ -18,7 +19,7 @@
 
 /* ── Private state ──────────────────────────────────────────────────────── */
 
-static char s_socket_path[256];
+static char s_socket_path[108];  /* Matches sizeof(sun_path) */
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -37,7 +38,7 @@ static int clamd_connect(void)
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, s_socket_path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s_socket_path);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         log_error("connect(%s): %s", s_socket_path, strerror(errno));

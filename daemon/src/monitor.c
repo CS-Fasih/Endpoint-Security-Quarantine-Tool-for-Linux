@@ -139,7 +139,7 @@ static int add_watch_recursive(monitor_ctx_t *ctx, const char *dir_path)
                 log_warn("  The kernel limit fs.inotify.max_user_watches "
                          "has been exhausted.");
                 log_warn("  Some directories will NOT be monitored.");
-                log_warn("");
+                log_warn(" ");
                 log_warn("  To increase the limit (as root), run:");
                 log_warn("    echo 524288 > /proc/sys/fs/inotify/"
                          "max_user_watches");
@@ -262,7 +262,7 @@ int monitor_run(monitor_ctx_t *ctx)
             const char *parent = wd_map_get(ctx, event->wd);
             if (!parent) continue;
 
-            char fullpath[4096];
+            char fullpath[8192];
             snprintf(fullpath, sizeof(fullpath), "%s/%s", parent, event->name);
 
             /* If a new sub-directory is created, add a recursive watch. */

@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <json-c/json.h>
 
 /* ── Globals ────────────────────────────────────────────────────────────── */
 
@@ -177,23 +178,23 @@ static void on_gui_command(int client_fd,
 
         if (quarantine_list(&entries, &count) == 0 && count > 0) {
             for (int i = 0; i < count; i++) {
-                char json[ALERT_MSG_MAX];
-                snprintf(json, sizeof(json),
-                    "{"
-                    "\"event\":\"sync_entry\","
-                    "\"id\":\"%s\","
-                    "\"filename\":\"%s\","
-                    "\"quarantine_path\":\"%s\","
-                    "\"threat\":\"%s\","
-                    "\"timestamp\":%ld"
-                    "}",
-                    entries[i].id,
-                    entries[i].original_path,
-                    entries[i].quarantine_path,
-                    entries[i].threat_name,
-                    (long)entries[i].timestamp);
+                struct json_object *jobj = json_object_new_object();
+                json_object_object_add(jobj, "event",
+                    json_object_new_string("sync_entry"));
+                json_object_object_add(jobj, "id",
+                    json_object_new_string(entries[i].id));
+                json_object_object_add(jobj, "filename",
+                    json_object_new_string(entries[i].original_path));
+                json_object_object_add(jobj, "quarantine_path",
+                    json_object_new_string(entries[i].quarantine_path));
+                json_object_object_add(jobj, "threat",
+                    json_object_new_string(entries[i].threat_name));
+                json_object_object_add(jobj, "timestamp",
+                    json_object_new_int64((int64_t)entries[i].timestamp));
 
-                alert_send_to_client(client_fd, json);
+                const char *json_str = json_object_to_json_string(jobj);
+                alert_send_to_client(client_fd, json_str);
+                json_object_put(jobj);  /* Free the JSON object. */
             }
             free(entries);
         }
