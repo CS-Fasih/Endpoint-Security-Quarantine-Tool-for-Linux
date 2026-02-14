@@ -17,7 +17,7 @@ Group=root
 
 # Hardening
 ProtectSystem=strict
-ReadWritePaths=/opt/quarantine /var/log
+ReadWritePaths=/opt/quarantine /var/log /var/run
 PrivateTmp=false
 NoNewPrivileges=false
 

@@ -41,7 +41,6 @@ install_system_packages() {
     apt-get install -y -qq \
         build-essential \
         pkg-config \
-        libwebsockets-dev \
         libjson-c-dev \
         clamav \
         clamav-daemon \

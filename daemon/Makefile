@@ -5,7 +5,7 @@
 CC       = gcc
 CFLAGS   = -Wall -Wextra -Werror -O2 -std=c11 -D_GNU_SOURCE
 CFLAGS  += -I./include
-LDFLAGS  = -lwebsockets -ljson-c -lpthread
+LDFLAGS  = -ljson-c -lpthread
 
 SRC_DIR  = src
 OBJ_DIR  = obj
