@@ -1,0 +1,40 @@
+#!/bin/bash
+# ============================================================================
+# prerm — Sentinel pre-removal script.
+#
+# Executed by dpkg BEFORE package files are removed from the system.
+#
+# Actions:
+#   1. Stop the sentinel daemon gracefully.
+#   2. Disable the sentinel service (remove boot symlink).
+# ============================================================================
+
+set -e
+
+# ── 1. Stop the sentinel daemon ────────────────────────────────────────────
+# Gracefully stop the running daemon.  SIGTERM allows it to:
+#   - Stop the inotify monitor thread
+#   - Drain the thread pool (finish in-flight scans)
+#   - Broadcast a shutdown alert to connected GUIs
+#   - Close the UNIX domain socket and remove the socket file
+#
+# '|| true' ensures dpkg doesn't abort if the service is already stopped.
+
+echo "[sentinel] Stopping sentinel daemon..."
+systemctl stop sentinel || true
+
+# ── 2. Disable the service ─────────────────────────────────────────────────
+# Remove the multi-user.target.wants symlink so the daemon doesn't
+# attempt to start on the next boot after the binary is gone.
+
+echo "[sentinel] Disabling sentinel.service..."
+systemctl disable sentinel || true
+
+# ── 3. Reload systemd ─────────────────────────────────────────────────────
+# Clean up systemd's awareness of the now-removed unit file.
+
+systemctl daemon-reload || true
+
+echo "[sentinel] Sentinel daemon stopped and disabled."
+
+exit 0
