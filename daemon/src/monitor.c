@@ -1,8 +1,31 @@
 /*
- * monitor.c — Recursive inotify file-system watcher.
+ * monitor.c — Recursive inotify file-system watcher with graceful limits.
  *
  * Watches configured directories for IN_CLOSE_WRITE and IN_CREATE events
  * and dispatches file paths to the registered callback.
+ *
+ * Fix 3: Handles ENOSPC (watch limit exhaustion) gracefully by logging
+ * a clear warning with instructions rather than crashing.
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │  NOTE ON FANOTIFY ALTERNATIVE                                      │
+ * │                                                                    │
+ * │  For full-disk monitoring without per-directory watch limits,       │
+ * │  consider fanotify(7) with FAN_MARK_FILESYSTEM:                    │
+ * │                                                                    │
+ * │    int fan_fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);          │
+ * │    fanotify_mark(fan_fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM,      │
+ * │                  FAN_CLOSE_WRITE, AT_FDCWD, "/");                  │
+ * │                                                                    │
+ * │  Advantages:                                                       │
+ * │    - Single mark covers the entire filesystem (no recursion)       │
+ * │    - No watch-descriptor limits                                    │
+ * │    - FAN_REPORT_FID gives full path resolution (kernel 5.1+)       │
+ * │  Caveats:                                                          │
+ * │    - Requires CAP_SYS_ADMIN (root)                                │
+ * │    - Less granular event names (need /proc/self/fd readlink)       │
+ * │    - Not all distros enable CONFIG_FANOTIFY_ACCESS_PERMISSIONS     │
+ * └─────────────────────────────────────────────────────────────────────┘
  *
  * Part of the Sentinel Endpoint Security daemon.
  */
@@ -41,6 +64,11 @@ struct monitor_ctx {
     void              *user_data;
 
     wd_entry_t        *wd_map[WD_MAP_BUCKETS];   /* wd → path */
+
+    /* ── Watch limit tracking (Fix 3) ─────────────────────────────── */
+    int                watches_added;   /* Successfully registered watches  */
+    int                watches_failed;  /* Watches that hit ENOSPC          */
+    int                enospc_logged;   /* Have we already logged the hint? */
 };
 
 /* ── Watch-descriptor map helpers ───────────────────────────────────────── */
@@ -98,9 +126,39 @@ static int add_watch_recursive(monitor_ctx_t *ctx, const char *dir_path)
             /* Permission denied or gone — skip silently. */
             return 0;
         }
+
+        /* ── Fix 3: Graceful ENOSPC handling ──────────────────────── */
+        if (errno == ENOSPC) {
+            ctx->watches_failed++;
+
+            if (!ctx->enospc_logged) {
+                ctx->enospc_logged = 1;
+                log_warn("═══════════════════════════════════════════════"
+                         "═══════════════════════");
+                log_warn("  INOTIFY WATCH LIMIT REACHED");
+                log_warn("  The kernel limit fs.inotify.max_user_watches "
+                         "has been exhausted.");
+                log_warn("  Some directories will NOT be monitored.");
+                log_warn("");
+                log_warn("  To increase the limit (as root), run:");
+                log_warn("    echo 524288 > /proc/sys/fs/inotify/"
+                         "max_user_watches");
+                log_warn("  To persist across reboots, add to "
+                         "/etc/sysctl.conf:");
+                log_warn("    fs.inotify.max_user_watches=524288");
+                log_warn("═══════════════════════════════════════════════"
+                         "═══════════════════════");
+            }
+
+            /* Do NOT return -1 — continue watching what we can. */
+            return 0;
+        }
+
         log_error("inotify_add_watch(%s): %s", dir_path, strerror(errno));
         return -1;
     }
+
+    ctx->watches_added++;
     wd_map_put(ctx, wd, dir_path);
 
     DIR *dp = opendir(dir_path);
@@ -147,6 +205,16 @@ monitor_ctx_t *monitor_create(const char **dirs,
         if (add_watch_recursive(ctx, dirs[i]) < 0) {
             log_warn("Partial failure adding watches for %s", dirs[i]);
         }
+    }
+
+    /* ── Fix 3: Print watch summary ───────────────────────────────── */
+    log_info("Inotify watch summary: %d added, %d failed (ENOSPC)",
+             ctx->watches_added, ctx->watches_failed);
+
+    if (ctx->watches_failed > 0) {
+        log_warn("%d directories are NOT being monitored due to watch "
+                 "limit exhaustion. Increase fs.inotify.max_user_watches.",
+                 ctx->watches_failed);
     }
 
     return ctx;
