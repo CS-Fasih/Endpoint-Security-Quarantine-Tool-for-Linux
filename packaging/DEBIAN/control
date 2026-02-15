@@ -1,23 +1,22 @@
-Package: sentinel
+Package: sentinel-endpoint-security
 Version: 1.0.0
-Section: security
+Section: admin
 Priority: optional
 Architecture: amd64
-Maintainer: CS-Fasih <cs-fasih@github.com>
+Maintainer: CS-Fasih <cs.fasih@github.com>
+Depends: clamav (>= 0.103), clamav-daemon (>= 0.103), libjson-c5 (>= 0.15), libpthread-stubs0-dev
+Homepage: https://github.com/CS-Fasih/Endpoint-Security-Quarantine-Tool-for-Linux
 Description: Sentinel — Real-Time Endpoint Security & Quarantine Tool
- Sentinel is a Linux endpoint security daemon that provides real-time
- file monitoring via inotify, ClamAV-based malware scanning, automatic
- quarantine with manifest tracking, and a polished Electron GUI for
- threat management.  The daemon communicates with the GUI over a
- permission-controlled UNIX domain socket.
+ Sentinel is a real-time endpoint security daemon for Linux that monitors
+ the filesystem using inotify, scans new and modified files with ClamAV,
+ and automatically quarantines detected threats.
  .
  Features:
-  - Multi-threaded scan pipeline (pthread thread pool)
-  - Recursive inotify file watcher with ENOSPC graceful fallback
-  - ClamAV clamd integration for virus detection
-  - Automatic quarantine with UUID-based manifest
-  - Secure UNIX domain socket IPC (no TCP exposure)
-  - Electron dashboard with real-time scan log and threat vault
-  - State synchronisation: GUI rebuilds vault on reconnect
-Depends: clamav (>= 0.103), clamav-daemon, libjson-c5, libpthread-stubs0-dev
-Homepage: https://github.com/CS-Fasih/Endpoint-Security-Quarantine-Tool-for-Linux
+  - Real-time file monitoring via inotify (recursive)
+  - ClamAV integration via clamd UNIX socket
+  - Automatic quarantine with UUID-based manifest tracking
+  - Electron GUI dashboard with live scan log and threat vault
+  - Secure IPC via UNIX domain sockets (no TCP exposure)
+  - Thread pool for non-blocking parallel scans
+  - Graceful inotify watch limit handling (ENOSPC)
+  - State synchronization protocol for GUI reconnection
