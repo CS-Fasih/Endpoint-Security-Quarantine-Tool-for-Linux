@@ -131,6 +131,20 @@ static void scan_worker(char *filepath, void *user_data)
 
     for (attempts = 0; attempts <= SCAN_MAX_RETRIES; attempts++) {
         if (attempts > 0) {
+            /*
+             * Before retrying, check if the file still exists.
+             * Transient files (browser temp, build artifacts, etc.) often
+             * disappear within milliseconds.  Retrying on a dead path just
+             * wastes a worker thread for (retries × delay) seconds.
+             */
+            struct stat retry_st;
+            if (stat(filepath, &retry_st) != 0) {
+                log_info("[worker] File vanished before retry: %s — skipping",
+                         filepath);
+                free(filepath);
+                return;
+            }
+
             log_warn("[worker] Retry %d/%d for %s — waiting %ds ...",
                      attempts, SCAN_MAX_RETRIES, filepath, SCAN_RETRY_DELAY_S);
             alert_broadcast(ALERT_TYPE_STATUS, filepath, NULL,
@@ -237,15 +251,20 @@ static void on_file_event(const char *filepath, void *user_data)
     if (base[0] == '.') return;
 
     /*
-     * Skip ClamAV's own transient work files.
-     * clamd creates temporary files like:
-     *   /tmp/clamav-<hash>.tmp
-     *   /tmp/<timestamp>-scantemp.<hash>/clamav-<hash>.tmp
-     * These appear and disappear instantly, causing "No such file"
-     * errors and useless retry loops if we try to scan them.
+     * Skip transient temporary files that appear and vanish instantly.
+     * These flood the queue and block workers with pointless retries.
+     *
+     *   clamav-*        : clamd's own temp files during scans
+     *   *-scantemp*     : clamd scan work directories
+     *   chromecrx_*     : Chrome extension unpacking
+     *   .org.chromium.* : Chromium profile swap files
+     *   .goutputstream  : GLib/GNOME temp write files
      */
-    if (strstr(filepath, "clamav-") != NULL ||
-        strstr(filepath, "-scantemp") != NULL) {
+    if (strstr(filepath, "clamav-") != NULL   ||
+        strstr(filepath, "-scantemp") != NULL ||
+        strstr(filepath, "chromecrx_") != NULL ||
+        strstr(filepath, ".org.chromium.") != NULL ||
+        strstr(filepath, ".goutputstream") != NULL) {
         return;
     }
 
