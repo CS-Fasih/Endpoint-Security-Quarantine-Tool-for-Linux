@@ -1,0 +1,19 @@
+[Desktop Entry]
+# ============================================================================
+# Sentinel Endpoint Security — Desktop Entry
+# ============================================================================
+# Installed to /usr/share/applications/ so the GUI appears in the Ubuntu
+# app launcher (GNOME, KDE, etc.).
+# ============================================================================
+
+Name=Sentinel Endpoint Security
+Comment=Real-time endpoint security dashboard with threat quarantine
+GenericName=Antivirus Dashboard
+Exec=/opt/sentinel-gui/sentinel-gui
+Icon=/opt/sentinel-gui/resources/app/renderer/icon.png
+Terminal=false
+Type=Application
+Categories=System;Security;Monitor;
+Keywords=antivirus;security;malware;quarantine;clamav;sentinel;
+StartupNotify=true
+StartupWMClass=sentinel-gui
