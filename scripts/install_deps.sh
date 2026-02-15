@@ -79,6 +79,39 @@ configure_clamav() {
         log_warn "freshclam returned non-zero — definitions may already be up to date."
     fi
 
+    # ── Memory-optimisation for low-end hardware ──────────────────────
+    # ConcurrentDatabaseReload: When set to "yes" (default), clamd loads
+    #   the new signature database into RAM while the old one is still in
+    #   memory, effectively doubling RAM usage during reloads.  On machines
+    #   with ≤ 8 GB RAM this can trigger OOM-kills.  Setting it to "no"
+    #   forces a serial reload that frees the old DB before loading the new.
+    #
+    # MaxThreads: Limit the number of concurrent scan threads to reduce
+    #   peak memory usage on constrained hardware.
+    # ──────────────────────────────────────────────────────────────────
+    local clamd_conf="/etc/clamav/clamd.conf"
+    if [[ -f "$clamd_conf" ]]; then
+        log_info "Applying low-memory ClamAV optimisations to ${clamd_conf} ..."
+
+        # ConcurrentDatabaseReload
+        if grep -q "^ConcurrentDatabaseReload" "$clamd_conf"; then
+            sed -i 's/^ConcurrentDatabaseReload.*/ConcurrentDatabaseReload no/' "$clamd_conf"
+        else
+            echo "ConcurrentDatabaseReload no" >> "$clamd_conf"
+        fi
+
+        # MaxThreads — keep it modest on low-end CPUs
+        if grep -q "^MaxThreads" "$clamd_conf"; then
+            sed -i 's/^MaxThreads.*/MaxThreads 2/' "$clamd_conf"
+        else
+            echo "MaxThreads 2" >> "$clamd_conf"
+        fi
+
+        log_ok "ClamAV memory optimisations applied (ConcurrentDatabaseReload=no, MaxThreads=2)."
+    else
+        log_warn "${clamd_conf} not found — skipping memory optimisations."
+    fi
+
     log_info "Enabling and starting ClamAV services..."
     systemctl enable clamav-freshclam --quiet
     systemctl start  clamav-freshclam
@@ -86,9 +119,11 @@ configure_clamav() {
     systemctl enable clamav-daemon --quiet
     systemctl start  clamav-daemon
 
-    # Wait for clamd socket to appear (up to 30 s)
-    log_info "Waiting for clamd socket to become available..."
-    local retries=30
+    # Wait for clamd socket to appear (up to 150 s)
+    # On older hardware (i5 4th gen, 8 GB RAM) signature loading can take
+    # well over 30 seconds — we give it a generous 2.5-minute window.
+    log_info "Waiting for clamd socket to become available (timeout: 150 s)..."
+    local retries=150
     while [[ ! -S /var/run/clamav/clamd.ctl ]] && (( retries-- > 0 )); do
         sleep 1
     done
@@ -96,7 +131,8 @@ configure_clamav() {
     if [[ -S /var/run/clamav/clamd.ctl ]]; then
         log_ok "clamd is running and socket is ready."
     else
-        log_warn "clamd socket not found after 30 s — the daemon may still be loading."
+        log_warn "clamd socket not found after 150 s — the daemon may still be loading."
+        log_warn "The Sentinel daemon will retry scanner connections automatically."
     fi
 }
 
