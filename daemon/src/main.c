@@ -236,6 +236,19 @@ static void on_file_event(const char *filepath, void *user_data)
     base = base ? base + 1 : filepath;
     if (base[0] == '.') return;
 
+    /*
+     * Skip ClamAV's own transient work files.
+     * clamd creates temporary files like:
+     *   /tmp/clamav-<hash>.tmp
+     *   /tmp/<timestamp>-scantemp.<hash>/clamav-<hash>.tmp
+     * These appear and disappear instantly, causing "No such file"
+     * errors and useless retry loops if we try to scan them.
+     */
+    if (strstr(filepath, "clamav-") != NULL ||
+        strstr(filepath, "-scantemp") != NULL) {
+        return;
+    }
+
     /* Verify file still exists and is accessible. */
     struct stat st;
     if (stat(filepath, &st) != 0 || !S_ISREG(st.st_mode))

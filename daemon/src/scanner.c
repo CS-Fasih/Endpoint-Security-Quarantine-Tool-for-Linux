@@ -14,8 +14,12 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 
 /* ── Private state ──────────────────────────────────────────────────────── */
 
@@ -106,18 +110,89 @@ int scanner_scan_file(const char *filepath, scan_report_t *report)
     memset(report, 0, sizeof(*report));
     report->result = SCAN_RESULT_ERROR;
 
-    int fd = clamd_connect();
-    if (fd < 0) return -1;
+    /*
+     * Use clamd's zINSTREAM protocol instead of SCAN.
+     *
+     * SCAN requires clamd (which runs as the unprivileged user "clamav")
+     * to open the target file itself.  On most Linux systems the user's
+     * home directory has mode 700, so clamd gets "Permission denied".
+     *
+     * zINSTREAM solves this: our daemon (running as root) opens and reads
+     * the file, then streams the raw bytes to clamd over the socket.
+     * clamd never touches the filesystem — it scans pure byte content.
+     *
+     * Protocol:
+     *   1. Send "zINSTREAM\0"  (null-terminated z-prefix command).
+     *   2. For each chunk: send 4-byte big-endian length + chunk data.
+     *   3. Send 4-byte zero (0x00000000) to signal end-of-data.
+     *   4. Read the response (same format as SCAN: "... OK\n" / "... FOUND\n").
+     */
 
-    /* Build command: "SCAN <filepath>\n" */
-    char cmd[QR_MAX_PATH + 16];
-    snprintf(cmd, sizeof(cmd), "SCAN %s\n", filepath);
+    /* Step 1: Open the file ourselves (we're root). */
+    int file_fd = open(filepath, O_RDONLY);
+    if (file_fd < 0) {
+        log_error("Cannot open %s for scanning: %s", filepath, strerror(errno));
+        return -1;
+    }
 
+    int sock_fd = clamd_connect();
+    if (sock_fd < 0) {
+        close(file_fd);
+        return -1;
+    }
+
+    /* Step 2: Send the zINSTREAM command (null-terminated). */
+    const char cmd[] = "zINSTREAM";
+    if (write(sock_fd, cmd, sizeof(cmd)) < 0) {  /* sizeof includes the '\0' */
+        log_error("clamd write zINSTREAM cmd error: %s", strerror(errno));
+        close(file_fd);
+        close(sock_fd);
+        return -1;
+    }
+
+    /* Step 3: Stream file contents in 8 KB chunks. */
+    #define CHUNK_SIZE 8192
+    char buf[CHUNK_SIZE];
+    ssize_t nread;
+    int stream_ok = 1;
+
+    while ((nread = read(file_fd, buf, sizeof(buf))) > 0) {
+        /* 4-byte big-endian chunk length. */
+        uint32_t chunk_len = htonl((uint32_t)nread);
+        if (write(sock_fd, &chunk_len, 4) < 0 ||
+            write(sock_fd, buf, (size_t)nread) < 0) {
+            log_error("clamd INSTREAM write error: %s", strerror(errno));
+            stream_ok = 0;
+            break;
+        }
+    }
+    close(file_fd);
+
+    if (!stream_ok) {
+        close(sock_fd);
+        return -1;
+    }
+
+    /* Step 4: Send end-of-data marker (4 zero bytes). */
+    uint32_t zero = 0;
+    if (write(sock_fd, &zero, 4) < 0) {
+        log_error("clamd INSTREAM end marker error: %s", strerror(errno));
+        close(sock_fd);
+        return -1;
+    }
+
+    /* Step 5: Read the response. */
     char resp[1024];
-    ssize_t n = clamd_command(fd, cmd, resp, sizeof(resp));
-    close(fd);
+    ssize_t total = 0;
+    while ((size_t)total < sizeof(resp) - 1) {
+        ssize_t n = read(sock_fd, resp + total, sizeof(resp) - 1 - (size_t)total);
+        if (n <= 0) break;
+        total += n;
+    }
+    resp[total] = '\0';
+    close(sock_fd);
 
-    if (n <= 0) {
+    if (total <= 0) {
         log_error("No response from clamd for file: %s", filepath);
         return -1;
     }
@@ -126,9 +201,11 @@ int scanner_scan_file(const char *filepath, scan_report_t *report)
 
     /*
      * Response format:
-     *   /path/to/file: OK\n                        → clean
-     *   /path/to/file: <signature> FOUND\n         → infected
-     *   /path/to/file: <reason> ERROR\n            → error
+     *   stream: OK\n                          → clean
+     *   stream: <signature> FOUND\n           → infected
+     *   stream: <reason> ERROR\n              → error
+     *
+     * With INSTREAM the prefix is "stream:" instead of the filepath.
      */
     char *found_ptr = strstr(resp, " FOUND");
     char *ok_ptr    = strstr(resp, " OK");
