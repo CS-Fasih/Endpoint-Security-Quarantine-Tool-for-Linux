@@ -31,6 +31,18 @@ chmod 700 "$QUARANTINE_DIR"
 chown root:root "$QUARANTINE_DIR"
 echo "sentinel: Quarantine directory secured (mode 700, owner root:root)."
 
+# ── 2. Fix Electron SUID sandbox permissions ────────────────────────────────
+# Electron requires its chrome-sandbox helper to be owned by root with the
+# SUID bit set (mode 4755).  Without this, the GUI will silently crash on
+# launch because the Chromium sandbox refuses to run without SUID isolation.
+CHROME_SANDBOX="/opt/sentinel-gui/chrome-sandbox"
+if [ -f "$CHROME_SANDBOX" ]; then
+    echo "sentinel: Setting SUID bit on chrome-sandbox ..."
+    chown root:root "$CHROME_SANDBOX"
+    chmod 4755 "$CHROME_SANDBOX"
+    echo "sentinel: chrome-sandbox secured (mode 4755, owner root:root)."
+fi
+
 # ── 2. Reload systemd manager configuration ────────────────────────────────
 # Required so systemd sees the newly installed sentinel.service unit file.
 echo "sentinel: Reloading systemd daemon configuration ..."

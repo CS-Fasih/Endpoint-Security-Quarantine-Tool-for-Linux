@@ -180,6 +180,15 @@ if [ -f "${STAGING_DIR}/opt/sentinel-gui/sentinel-gui" ]; then
     chmod 0755 "${STAGING_DIR}/opt/sentinel-gui/sentinel-gui"
 fi
 
+# CRITICAL: Electron's Chromium sandbox helper requires SUID (mode 4755).
+# Without this, the GUI silently crashes on launch because the setuid sandbox
+# refuses to start. The postinst also sets this for safety, but we set it
+# here so it's baked into the .deb archive itself.
+if [ -f "${STAGING_DIR}/opt/sentinel-gui/chrome-sandbox" ]; then
+    chmod 4755 "${STAGING_DIR}/opt/sentinel-gui/chrome-sandbox"
+    echo "  Set SUID on chrome-sandbox (mode 4755)"
+fi
+
 # ── 3e: Desktop entry → /usr/share/applications/ ───────────────────────────
 # Makes the GUI appear in the Ubuntu application menu (GNOME, KDE, etc.).
 echo "  Installing desktop entry → /usr/share/applications/sentinel.desktop"
