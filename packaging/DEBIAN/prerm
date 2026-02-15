@@ -1,40 +1,31 @@
 #!/bin/bash
 # ============================================================================
-# prerm — Sentinel pre-removal script.
+# prerm — Pre-Removal Script for Sentinel Endpoint Security
+# ============================================================================
 #
-# Executed by dpkg BEFORE package files are removed from the system.
+# Executed by dpkg BEFORE package files are removed from the filesystem.
+# This script:
 #
-# Actions:
-#   1. Stop the sentinel daemon gracefully.
-#   2. Disable the sentinel service (remove boot symlink).
+#   1. Stops the running sentinel daemon gracefully (SIGTERM).
+#   2. Disables the service so it no longer starts on boot.
+#
+# We use "|| true" defensively — if the service was already stopped or
+# never started, the uninstallation should still succeed.
+#
+# Exit on any error.
 # ============================================================================
 
 set -e
 
-# ── 1. Stop the sentinel daemon ────────────────────────────────────────────
-# Gracefully stop the running daemon.  SIGTERM allows it to:
-#   - Stop the inotify monitor thread
-#   - Drain the thread pool (finish in-flight scans)
-#   - Broadcast a shutdown alert to connected GUIs
-#   - Close the UNIX domain socket and remove the socket file
-#
-# '|| true' ensures dpkg doesn't abort if the service is already stopped.
+echo "sentinel: Stopping sentinel daemon ..."
+systemctl stop sentinel.service || true
 
-echo "[sentinel] Stopping sentinel daemon..."
-systemctl stop sentinel || true
+echo "sentinel: Disabling sentinel.service from boot ..."
+systemctl disable sentinel.service || true
 
-# ── 2. Disable the service ─────────────────────────────────────────────────
-# Remove the multi-user.target.wants symlink so the daemon doesn't
-# attempt to start on the next boot after the binary is gone.
-
-echo "[sentinel] Disabling sentinel.service..."
-systemctl disable sentinel || true
-
-# ── 3. Reload systemd ─────────────────────────────────────────────────────
-# Clean up systemd's awareness of the now-removed unit file.
-
+echo "sentinel: Reloading systemd daemon configuration ..."
 systemctl daemon-reload || true
 
-echo "[sentinel] Sentinel daemon stopped and disabled."
+echo "sentinel: Pre-removal cleanup complete."
 
 exit 0
