@@ -94,35 +94,34 @@ echo ""
 # ── Step 2: Package the Electron GUI with electron-packager ─────────────────
 echo "━━━ [2/5] Packaging the Electron GUI ━━━"
 
-# Install npm dependencies if node_modules doesn't exist.
-if [ ! -d "${GUI_DIR}/node_modules" ]; then
-    echo "  Installing npm dependencies ..."
-    (cd "${GUI_DIR}" && npm install --production)
+# Install npm dependencies (including devDependencies for electron-packager).
+echo "  Installing npm dependencies ..."
+(cd "${GUI_DIR}" && npm install)
+
+# Install electron-packager as a local dev dependency if not already present.
+if ! (cd "${GUI_DIR}" && npx --no-install electron-packager --version) &> /dev/null; then
+    echo "  Installing electron-packager as local devDependency ..."
+    (cd "${GUI_DIR}" && npm install --save-dev electron-packager)
 fi
 
-# Check if electron-packager is available globally or as a local devDep.
-# If not, install it temporarily.
-if ! command -v electron-packager &> /dev/null && \
-   ! npx --no-install electron-packager --version &> /dev/null 2>&1; then
-    echo "  Installing electron-packager (globally) ..."
-    npm install -g electron-packager
-fi
+# Output the packaged Electron app to a build/ directory OUTSIDE of gui/
+# to avoid electron-packager scanning its own output.
+BUILD_OUTPUT_DIR="${PACKAGING_DIR}/build"
+ELECTRON_OUTPUT_DIR="${BUILD_OUTPUT_DIR}/sentinel-gui-linux-x64"
 
-# Remove any previous electron-packager output for our target.
-ELECTRON_OUTPUT_DIR="${GUI_DIR}/sentinel-gui-linux-x64"
-if [ -d "${ELECTRON_OUTPUT_DIR}" ]; then
-    echo "  Removing previous electron-packager output ..."
-    rm -rf "${ELECTRON_OUTPUT_DIR}"
+if [ -d "${BUILD_OUTPUT_DIR}" ]; then
+    echo "  Removing previous build output ..."
+    rm -rf "${BUILD_OUTPUT_DIR}"
 fi
+mkdir -p "${BUILD_OUTPUT_DIR}"
 
 echo "  Running electron-packager ..."
 echo "  (This may take a minute — it bundles the entire Electron runtime)"
-npx --yes electron-packager "${GUI_DIR}" sentinel-gui \
+(cd "${GUI_DIR}" && npx electron-packager . sentinel-gui \
     --platform=linux \
     --arch=x64 \
-    --out="${GUI_DIR}" \
-    --overwrite \
-    --no-prune
+    --out="${BUILD_OUTPUT_DIR}" \
+    --overwrite)
 
 # Verify the packaged GUI output exists.
 if [ ! -d "${ELECTRON_OUTPUT_DIR}" ]; then
