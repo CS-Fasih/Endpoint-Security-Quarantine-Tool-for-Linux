@@ -1,64 +1,60 @@
 #!/bin/bash
 # ============================================================================
-# postinst — Sentinel post-installation script.
+# postinst — Post-Installation Script for Sentinel Endpoint Security
+# ============================================================================
 #
-# Executed by dpkg AFTER all package files have been copied to the system.
+# Executed by dpkg AFTER all package files have been unpacked to their
+# final locations.  This script:
 #
-# Actions:
-#   1. Create the quarantine directory with strict permissions.
-#   2. Reload systemd to pick up the new sentinel.service unit.
-#   3. Enable the sentinel daemon so it starts on boot.
-#   4. Start the sentinel daemon immediately.
+#   1. Creates the quarantine directory with strict permissions (700).
+#   2. Reloads systemd so it picks up the new sentinel.service unit.
+#   3. Enables the sentinel service to start on boot.
+#   4. Starts the sentinel daemon immediately.
+#
+# Exit on any error — dpkg will roll back the installation if this fails.
 # ============================================================================
 
 set -e
 
-# ── 1. Create quarantine directory ──────────────────────────────────────────
-# The quarantine directory stores copies of infected files.
-# It must be owned by root with 700 permissions so that regular users
-# cannot access quarantined malware samples.
-
+# ── 1. Create the quarantine vault ──────────────────────────────────────────
+# The daemon stores quarantined malware here.  Only root should have access.
 QUARANTINE_DIR="/opt/quarantine"
 
 if [ ! -d "$QUARANTINE_DIR" ]; then
+    echo "sentinel: Creating quarantine directory at $QUARANTINE_DIR ..."
     mkdir -p "$QUARANTINE_DIR"
-    echo "[sentinel] Created quarantine directory: $QUARANTINE_DIR"
 fi
 
-chown root:root "$QUARANTINE_DIR"
+# Lock down permissions: only root can read/write/traverse.
+# This prevents unprivileged users from accessing quarantined malware samples.
 chmod 700 "$QUARANTINE_DIR"
-echo "[sentinel] Quarantine directory permissions set to 700 (root only)."
+chown root:root "$QUARANTINE_DIR"
+echo "sentinel: Quarantine directory secured (mode 700, owner root:root)."
 
-# ── 2. Reload systemd daemon ───────────────────────────────────────────────
-# This tells systemd to re-scan /etc/systemd/system/ for new or changed
-# unit files.  Required because we just dropped sentinel.service there.
-
+# ── 2. Reload systemd manager configuration ────────────────────────────────
+# Required so systemd sees the newly installed sentinel.service unit file.
+echo "sentinel: Reloading systemd daemon configuration ..."
 systemctl daemon-reload
-echo "[sentinel] systemd daemon reloaded."
 
-# ── 3. Enable the sentinel service ────────────────────────────────────────
-# Creates the symlink in multi-user.target.wants so the daemon starts
-# automatically on every boot.
+# ── 3. Enable the service to start on boot ──────────────────────────────────
+# This creates a symlink in /etc/systemd/system/multi-user.target.wants/
+echo "sentinel: Enabling sentinel.service for automatic start on boot ..."
+systemctl enable sentinel.service
 
-systemctl enable sentinel
-echo "[sentinel] sentinel.service enabled (will start on boot)."
-
-# ── 4. Start the daemon immediately ───────────────────────────────────────
-# Start the daemon right now so the user doesn't have to reboot.
-# We use '|| true' to prevent the postinst from failing if clamd is not
-# yet fully initialised (the daemon handles this gracefully internally).
-
-systemctl start sentinel || true
-echo "[sentinel] sentinel.service started."
+# ── 4. Start the daemon immediately ─────────────────────────────────────────
+# So the user gets real-time protection right after installation.
+echo "sentinel: Starting sentinel daemon ..."
+systemctl start sentinel.service
 
 echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "  Sentinel installed successfully!"
-echo ""
-echo "  Daemon:  systemctl status sentinel"
-echo "  GUI:     Launch 'Sentinel Security' from the app menu"
-echo "           or run: /opt/sentinel-gui/sentinel-gui"
-echo "═══════════════════════════════════════════════════════════"
+echo "╔══════════════════════════════════════════════════════════════════╗"
+echo "║  Sentinel Endpoint Security installed successfully!             ║"
+echo "║                                                                 ║"
+echo "║  • Daemon running:  systemctl status sentinel                   ║"
+echo "║  • Logs:            journalctl -u sentinel -f                   ║"
+echo "║  • GUI:             Search 'Sentinel' in your app menu          ║"
+echo "║  • Quarantine:      /opt/quarantine                             ║"
+echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 
 exit 0
