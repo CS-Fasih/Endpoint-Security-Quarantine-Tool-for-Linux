@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <json-c/json.h>
 
 /* ── Globals ────────────────────────────────────────────────────────────── */
@@ -40,6 +41,17 @@ static const char *WATCH_DIRS[] = { "/home", "/tmp", NULL };
 /* Thread pool sizing */
 #define WORKER_THREADS   4
 #define QUEUE_CAPACITY 256
+
+/* ── Fail-safe scan configuration ───────────────────────────────────────── */
+
+/*
+ * Number of times to retry a scan when clamd is unreachable.
+ * After exhausting retries the file is locked down (chmod 0000).
+ */
+#define SCAN_MAX_RETRIES    3
+
+/* Seconds to sleep between retry attempts. */
+#define SCAN_RETRY_DELAY_S  2
 
 /* ── Signal handling ────────────────────────────────────────────────────── */
 
@@ -68,7 +80,19 @@ static void install_signal_handlers(void)
 
 /**
  * Executed by each thread-pool worker for every dequeued file path.
- * This is the core pipeline: scan → quarantine → alert.
+ * This is the FAIL-SAFE pipeline:
+ *
+ *   1. Store the original permissions.
+ *   2. Strip execute permission immediately (chmod a-x) so a potentially
+ *      malicious file cannot run while we are analysing it.
+ *   3. Attempt the ClamAV scan, retrying up to SCAN_MAX_RETRIES times
+ *      if clamd is unreachable.
+ *   4. On success (clean): restore original permissions.
+ *   5. On threat: quarantine as before.
+ *   6. On exhausted retries (scanner offline): LOCKDOWN the file to
+ *      permissions 0000 and alert the GUI.  This prevents the old
+ *      "fail-open" flaw where malware could execute while the scanner
+ *      was down.
  *
  * IMPORTANT: This function takes ownership of `filepath` and MUST free() it.
  */
@@ -78,12 +102,70 @@ static void scan_worker(char *filepath, void *user_data)
 
     log_info("[worker] Scanning: %s", filepath);
 
-    /* Send to ClamAV scanner. */
+    /* ── Step 1: Save original permissions ──────────────────────────── */
+    struct stat orig_st;
+    mode_t orig_mode = 0644;   /* Sane fallback if stat fails. */
+    if (stat(filepath, &orig_st) == 0) {
+        orig_mode = orig_st.st_mode;
+    }
+
+    /* ── Step 2: Strip execute permission (fail-closed posture) ─────── */
+    /*
+     * Remove the execute bits for owner, group, and others.  This ensures
+     * the file cannot be launched while ClamAV is analysing it.
+     */
+    mode_t noexec_mode = orig_mode & (mode_t)(~(S_IXUSR | S_IXGRP | S_IXOTH));
+    if (noexec_mode != orig_mode) {
+        if (chmod(filepath, noexec_mode) != 0) {
+            log_warn("[worker] chmod a-x failed for %s: %s (continuing)",
+                     filepath, strerror(errno));
+        } else {
+            log_info("[worker] Stripped execute permission from: %s", filepath);
+        }
+    }
+
+    /* ── Step 3: Attempt the scan (with retry loop) ─────────────────── */
     scan_report_t report;
-    if (scanner_scan_file(filepath, &report) != 0) {
-        log_error("[worker] Scanner communication error for: %s", filepath);
+    int scan_ok  = 0;   /* 1 = scanner_scan_file() returned 0 (got a result) */
+    int attempts = 0;
+
+    for (attempts = 0; attempts <= SCAN_MAX_RETRIES; attempts++) {
+        if (attempts > 0) {
+            log_warn("[worker] Retry %d/%d for %s — waiting %ds ...",
+                     attempts, SCAN_MAX_RETRIES, filepath, SCAN_RETRY_DELAY_S);
+            alert_broadcast(ALERT_TYPE_STATUS, filepath, NULL,
+                            "Scanner offline — retrying...");
+            sleep(SCAN_RETRY_DELAY_S);
+        }
+
+        if (scanner_scan_file(filepath, &report) == 0) {
+            scan_ok = 1;
+            break;
+        }
+        log_error("[worker] Scanner communication error (attempt %d) for: %s",
+                  attempts + 1, filepath);
+    }
+
+    /* ── Step 4: Handle the result ──────────────────────────────────── */
+
+    if (!scan_ok) {
+        /*
+         * FAIL-SAFE LOCKDOWN:  clamd is unreachable after all retries.
+         * We refuse to let the file remain accessible — lock it down
+         * with permissions 0000 (no access for anyone except root via
+         * bypass).  This is the security-critical path that prevents
+         * the old "fail-open" vulnerability.
+         */
+        log_error("[worker] LOCKDOWN: Scanner offline after %d retries — "
+                  "locking file: %s", SCAN_MAX_RETRIES, filepath);
+
+        if (chmod(filepath, 0000) != 0) {
+            log_error("[worker] CRITICAL: chmod 0000 failed for %s: %s",
+                      filepath, strerror(errno));
+        }
+
         alert_broadcast(ALERT_TYPE_STATUS, filepath, NULL,
-                        "Scanner communication error");
+                        "Scanner offline. File locked down (chmod 0000).");
         free(filepath);
         return;
     }
@@ -93,6 +175,12 @@ static void scan_worker(char *filepath, void *user_data)
     case SCAN_RESULT_CLEAN:
         log_info("[worker] File clean: %s", filepath);
         alert_broadcast(ALERT_TYPE_SCAN_CLEAN, filepath, NULL, "File is clean");
+
+        /* Restore original permissions — the file is safe. */
+        if (chmod(filepath, orig_mode) != 0) {
+            log_warn("[worker] Failed to restore permissions on %s: %s",
+                     filepath, strerror(errno));
+        }
         break;
 
     case SCAN_RESULT_INFECTED:
@@ -103,15 +191,25 @@ static void scan_worker(char *filepath, void *user_data)
             alert_broadcast(ALERT_TYPE_SCAN_THREAT, filepath,
                             report.threat_name, "File quarantined");
         } else {
+            /* Quarantine failed — lock the file down as a last resort. */
+            log_error("[worker] Quarantine failed for %s — applying lockdown",
+                      filepath);
+            chmod(filepath, 0000);
             alert_broadcast(ALERT_TYPE_SCAN_THREAT, filepath,
                             report.threat_name,
-                            "CRITICAL: quarantine failed!");
+                            "CRITICAL: quarantine failed — file locked!");
         }
         break;
 
     case SCAN_RESULT_ERROR:
-        log_error("[worker] Scan error for %s", filepath);
-        alert_broadcast(ALERT_TYPE_STATUS, filepath, NULL, "Scan error");
+        /*
+         * clamd connected but returned an ERROR result (e.g. the file could
+         * not be read by clamd).  Same fail-safe: lock it down.
+         */
+        log_error("[worker] Scan error for %s — applying lockdown", filepath);
+        chmod(filepath, 0000);
+        alert_broadcast(ALERT_TYPE_STATUS, filepath, NULL,
+                        "Scan error — file locked down.");
         break;
     }
 
