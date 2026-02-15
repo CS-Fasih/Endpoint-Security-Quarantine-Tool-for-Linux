@@ -352,10 +352,25 @@ void alert_broadcast(alert_type_t type,
     for (int i = 0; i < ALERT_MAX_CLIENTS; i++) {
         if (s_clients[i].fd >= 0) {
             ssize_t w = write(s_clients[i].fd, msg, (size_t)n);
-            if (w < 0 && errno != EAGAIN) {
-                log_warn("IPC: write failed to client fd=%d — closing",
-                         s_clients[i].fd);
-                close_client(&s_clients[i]);
+            if (w < 0) {
+                /*
+                 * SIGPIPE is ignored (SIG_IGN in main.c), so a write to a
+                 * broken socket yields EPIPE instead of killing the daemon.
+                 * EAGAIN/EWOULDBLOCK means the send buffer is full — we
+                 *   silently drop this message for that client.
+                 * EPIPE/ECONNRESET mean the client has disconnected — we
+                 *   reclaim the slot cleanly to prevent use-after-close.
+                 */
+                if (errno == EPIPE || errno == ECONNRESET) {
+                    log_warn("IPC: broken pipe to client fd=%d — closing slot",
+                             s_clients[i].fd);
+                    close_client(&s_clients[i]);
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    log_warn("IPC: write failed to client fd=%d (%s) — closing",
+                             s_clients[i].fd, strerror(errno));
+                    close_client(&s_clients[i]);
+                }
+                /* EAGAIN/EWOULDBLOCK: silently skip this message. */
             }
         }
     }
@@ -377,13 +392,35 @@ int alert_send_to_client(int client_fd, const char *json_str)
 
     pthread_mutex_lock(&s_alert_mutex);
     ssize_t w = write(client_fd, buf, len + 1);
+    int write_errno = errno;   /* Capture errno before any other call. */
     pthread_mutex_unlock(&s_alert_mutex);
 
     free(buf);
 
     if (w < 0) {
-        log_error("alert_send_to_client: write to fd=%d failed: %s",
-                  client_fd, strerror(errno));
+        /*
+         * EPIPE/ECONNRESET: the client disconnected between command receipt
+         * and our reply.  Log a warning and close the slot if we can find it.
+         * This is non-fatal — the daemon must keep running.
+         */
+        if (write_errno == EPIPE || write_errno == ECONNRESET) {
+            log_warn("alert_send_to_client: broken pipe to fd=%d — client gone",
+                     client_fd);
+        } else {
+            log_error("alert_send_to_client: write to fd=%d failed: %s",
+                      client_fd, strerror(write_errno));
+        }
+
+        /* Best-effort cleanup: find and close the slot for this fd. */
+        pthread_mutex_lock(&s_alert_mutex);
+        for (int i = 0; i < ALERT_MAX_CLIENTS; i++) {
+            if (s_clients[i].fd == client_fd) {
+                close_client(&s_clients[i]);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&s_alert_mutex);
+
         return -1;
     }
     return 0;
