@@ -32,7 +32,7 @@ set -e   # Exit immediately on any error — no partial/broken packages.
 
 # ── Package metadata ────────────────────────────────────────────────────────
 PKG_NAME="sentinel-endpoint-security"
-PKG_VERSION="1.1.0"
+PKG_VERSION="1.2.0"
 PKG_ARCH="amd64"
 
 # ── Directory layout ────────────────────────────────────────────────────────
