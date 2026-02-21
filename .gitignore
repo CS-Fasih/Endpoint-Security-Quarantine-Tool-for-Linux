@@ -22,3 +22,8 @@ Thumbs.db
 *~
 build/
 daemon/obj/
+
+# Packaging build output (Electron app + .deb are too large for GitHub)
+packaging/build/
+packaging/sentinel-endpoint-security_*/
+packaging/*.deb
