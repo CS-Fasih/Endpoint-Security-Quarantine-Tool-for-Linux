@@ -98,6 +98,13 @@ int alert_send_to_client(int client_fd, const char *json_str);
 void alert_server_shutdown(void);
 
 /**
+ * Broadcast a raw pre-formatted JSON string to ALL connected clients.
+ * Use this for one-off event types that don't fit the standard schema.
+ * The string must NOT include a trailing newline — one is appended.
+ */
+void alert_broadcast_raw(const char *json_str);
+
+/**
  * Get the number of currently connected clients.
  */
 int alert_get_client_count(void);

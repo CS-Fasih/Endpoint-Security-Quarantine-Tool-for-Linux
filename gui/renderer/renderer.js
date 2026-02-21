@@ -17,6 +17,7 @@ const state = {
     scanned: 0,
     threats: 0,
     connected: false,
+    monitoringEnabled: true,  /* mirrors daemon g_monitoring_enabled */
     logEntries: [],
     vaultEntries: [],       /* { id, filename, threat, timestamp } */
     maxLogEntries: 200,
@@ -36,6 +37,9 @@ const dom = {
     threatVault: document.getElementById('threat-vault'),
     vaultCount: document.getElementById('vault-count'),
     btnClearLog: document.getElementById('btn-clear-log'),
+    btnToggle: document.getElementById('btn-toggle-protection'),
+    shieldIcon: document.getElementById('shield-icon'),
+    protectionCard: document.getElementById('protection-card'),
 };
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -87,8 +91,62 @@ function updateConnectionStatus(connected) {
     dom.connectionDot.title = connected ? 'Daemon connected' : 'Daemon disconnected';
     dom.connectionText.textContent = connected ? 'Protected' : 'Disconnected';
 
-    dom.statProtection.textContent = connected ? 'Active' : 'Inactive';
-    dom.statProtection.className = 'stat-value ' + (connected ? 'active' : 'inactive');
+    /* Disable toggle when daemon is not connected. */
+    dom.btnToggle.disabled = !connected;
+    dom.btnToggle.style.opacity = connected ? '1' : '0.4';
+
+    /* Refresh the protection card to reflect connection change. */
+    updateProtectionCard();
+}
+
+/**
+ * Update the Protection card (stat value, icon, card glow, toggle pill)
+ * based on the current connection + monitoring state.
+ */
+function updateProtectionCard() {
+    const isActive = state.connected && state.monitoringEnabled;
+    const isPaused = state.connected && !state.monitoringEnabled;
+
+    if (isActive) {
+        dom.statProtection.textContent = 'Active';
+        dom.statProtection.className = 'stat-value active';
+        dom.shieldIcon.textContent = '🛡️';
+        dom.protectionCard.className = 'stat-card card-active';
+    } else if (isPaused) {
+        dom.statProtection.textContent = 'Paused';
+        dom.statProtection.className = 'stat-value paused';
+        dom.shieldIcon.textContent = '⏸️';
+        dom.protectionCard.className = 'stat-card card-paused';
+    } else {
+        dom.statProtection.textContent = 'Inactive';
+        dom.statProtection.className = 'stat-value inactive';
+        dom.shieldIcon.textContent = '🛡️';
+        dom.protectionCard.className = 'stat-card';
+    }
+
+    /* Sync toggle pill appearance. */
+    if (state.monitoringEnabled) {
+        dom.btnToggle.className = 'toggle-btn toggle-on';
+        dom.btnToggle.querySelector('.toggle-label').textContent = 'ON';
+        dom.btnToggle.title = 'Click to pause protection';
+    } else {
+        dom.btnToggle.className = 'toggle-btn toggle-off';
+        dom.btnToggle.querySelector('.toggle-label').textContent = 'OFF';
+        dom.btnToggle.title = 'Click to resume protection';
+    }
+}
+
+/** Send a set_monitoring command to the daemon. */
+function toggleProtection() {
+    if (!state.connected) return;
+    const newEnabled = !state.monitoringEnabled;
+    /* Optimistic UI update – confirmed by incoming monitoring_state event. */
+    state.monitoringEnabled = newEnabled;
+    updateProtectionCard();
+    window.sentinel.sendAction({
+        action: 'set_monitoring',
+        id: newEnabled ? 'true' : 'false',
+    });
 }
 
 function updateStats() {
@@ -383,6 +441,14 @@ window.sentinel.onAlert((alert) => {
             console.log('[Sync] Vault rebuilt with', state.vaultEntries.length, 'entries');
             break;
 
+        case 'monitoring_state':
+            /* Daemon sent its current monitoring enabled/disabled state.
+             * Sent both on sync_state response AND after set_monitoring. */
+            state.monitoringEnabled = !!alert.enabled;
+            updateProtectionCard();
+            console.log('[Toggle] monitoring_state =', alert.enabled);
+            break;
+
         /* ── Real-time scan events ────────────────────────────────── */
         case 'scan_clean':
             state.scanned++;
@@ -434,6 +500,9 @@ window.sentinel.onStatus((status) => {
 
 /* Clear log button */
 dom.btnClearLog.addEventListener('click', clearLog);
+
+/* Protection toggle button */
+dom.btnToggle.addEventListener('click', toggleProtection);
 
 /* ── Initial State ──────────────────────────────────────────────────────── */
 

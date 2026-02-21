@@ -378,6 +378,38 @@ void alert_broadcast(alert_type_t type,
     pthread_mutex_unlock(&s_alert_mutex);
 }
 
+/* Broadcast a raw pre-formatted JSON string to all connected clients. */
+void alert_broadcast_raw(const char *json_str)
+{
+    if (!json_str) return;
+
+    /* Append newline delimiter (newline-delimited JSON framing). */
+    char msg[ALERT_MSG_MAX];
+    int n = snprintf(msg, sizeof(msg), "%s\n", json_str);
+    if (n <= 0 || (size_t)n >= sizeof(msg)) return;
+
+    pthread_mutex_lock(&s_alert_mutex);
+
+    for (int i = 0; i < ALERT_MAX_CLIENTS; i++) {
+        if (s_clients[i].fd >= 0) {
+            ssize_t w = write(s_clients[i].fd, msg, (size_t)n);
+            if (w < 0) {
+                if (errno == EPIPE || errno == ECONNRESET) {
+                    log_warn("IPC: broken pipe to client fd=%d — closing slot",
+                             s_clients[i].fd);
+                    close_client(&s_clients[i]);
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    log_warn("IPC: write failed to client fd=%d (%s) — closing",
+                             s_clients[i].fd, strerror(errno));
+                    close_client(&s_clients[i]);
+                }
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&s_alert_mutex);
+}
+
 int alert_send_to_client(int client_fd, const char *json_str)
 {
     if (client_fd < 0 || !json_str) return -1;

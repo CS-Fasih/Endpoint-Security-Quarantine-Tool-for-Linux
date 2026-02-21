@@ -35,6 +35,19 @@ static volatile int      g_running = 1;
 static monitor_ctx_t    *g_monitor = NULL;
 static threadpool_t     *g_pool    = NULL;
 
+/*
+ * Protection toggle: when 0, on_file_event() returns immediately so no new
+ * files are enqueued for scanning.  The daemon, IPC socket, and quarantine
+ * vault remain fully operational — the user can still manage quarantined
+ * files while monitoring is paused.
+ *
+ * Written only from the IPC command handler thread (serialised by the alert
+ * server lock) and read from the inotify monitor thread, so volatile is
+ * sufficient on x86/ARM with their TSO/weakly-ordered memory models given
+ * the single-writer pattern.  A full atomic would also work here.
+ */
+static volatile int      g_monitoring_enabled = 1;
+
 /* Directories to watch (NULL-terminated). */
 static const char *WATCH_DIRS[] = { "/home", "/tmp", NULL };
 
@@ -241,6 +254,9 @@ static void on_file_event(const char *filepath, void *user_data)
 {
     (void)user_data;
 
+    /* Bail out immediately if the user has paused protection. */
+    if (!g_monitoring_enabled) return;
+
     /* Skip the quarantine directory itself. */
     if (strncmp(filepath, QUARANTINE_DIR, strlen(QUARANTINE_DIR)) == 0)
         return;
@@ -287,10 +303,11 @@ static void on_file_event(const char *filepath, void *user_data)
  * Dispatches commands received from GUI clients over the UNIX socket.
  *
  * Supported actions:
- *   "sync_state" — Reads the quarantine manifest and sends the full list
- *                  to the requesting client so it can rebuild the Vault.
- *   "restore"    — Restores a quarantined file by UUID.
- *   "delete"     — Permanently deletes a quarantined file by UUID.
+ *   "sync_state"      — Sends quarantine manifest + monitoring state.
+ *   "restore"         — Restores a quarantined file by UUID.
+ *   "delete"          — Permanently deletes a quarantined file by UUID.
+ *   "set_monitoring"  — Pauses (enabled=false) or resumes (enabled=true)
+ *                       real-time file monitoring.
  */
 static void on_gui_command(int client_fd,
                            const char *action,
@@ -329,13 +346,48 @@ static void on_gui_command(int client_fd,
             free(entries);
         }
 
+        /* Send current monitoring state so the GUI toggle is in sync. */
+        {
+            char mon_msg[128];
+            snprintf(mon_msg, sizeof(mon_msg),
+                     "{\"event\":\"monitoring_state\",\"enabled\":%s}",
+                     g_monitoring_enabled ? "true" : "false");
+            alert_send_to_client(client_fd, mon_msg);
+        }
+
         /* Send sync-complete marker. */
         alert_send_to_client(client_fd,
-            "{\"event\":\"sync_complete\",\"count\":" 
-            "0}");  /* count doesn't matter, GUI uses entries */
+            "{\"event\":\"sync_complete\",\"count\":0}");
 
         log_info("State sync complete: sent %d entries to fd=%d",
                  count, client_fd);
+        return;
+    }
+
+    /* ── set_monitoring: pause or resume file monitoring ──────────── */
+    if (strcmp(action, "set_monitoring") == 0) {
+        /*
+         * The JSON payload carries:  { "action": "set_monitoring",
+         *                              "enabled": true | false }
+         * The "id" field is repurposed to carry "true" or "false" as
+         * a string by the GUI (reusing the existing bridge plumbing).
+         */
+        int enable = (id && strcmp(id, "true") == 0) ? 1 : 0;
+        g_monitoring_enabled = enable;
+
+        log_info("Monitoring %s by GUI request.",
+                 enable ? "RESUMED" : "PAUSED");
+
+        /* Broadcast the new state to ALL connected GUI clients. */
+        char bcast[128];
+        snprintf(bcast, sizeof(bcast),
+                 "{\"event\":\"monitoring_state\",\"enabled\":%s}",
+                 enable ? "true" : "false");
+        alert_broadcast_raw(bcast);
+
+        /* Also log a human-readable status entry in the scan log. */
+        alert_broadcast(ALERT_TYPE_STATUS, "sentinel", NULL,
+                        enable ? "Protection resumed" : "Protection paused");
         return;
     }
 

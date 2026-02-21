@@ -35,12 +35,18 @@
 
         <!-- ── Stats Bar ───────────────────────────────────────────── -->
         <section id="stats-bar">
-            <div class="stat-card">
-                <div class="stat-icon shield-icon">🛡️</div>
+            <div class="stat-card" id="protection-card">
+                <div class="stat-icon shield-icon" id="shield-icon">🛡️</div>
                 <div class="stat-content">
                     <span class="stat-label">Protection</span>
                     <span id="stat-protection" class="stat-value active">Active</span>
                 </div>
+                <button id="btn-toggle-protection" class="toggle-btn toggle-on" title="Click to pause protection">
+                    <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                    </span>
+                    <span class="toggle-label">ON</span>
+                </button>
             </div>
             <div class="stat-card">
                 <div class="stat-icon scan-icon">🔍</div>
