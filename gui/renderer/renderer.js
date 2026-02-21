@@ -91,10 +91,6 @@ function updateConnectionStatus(connected) {
     dom.connectionDot.title = connected ? 'Daemon connected' : 'Daemon disconnected';
     dom.connectionText.textContent = connected ? 'Protected' : 'Disconnected';
 
-    /* Disable toggle when daemon is not connected. */
-    dom.btnToggle.disabled = !connected;
-    dom.btnToggle.style.opacity = connected ? '1' : '0.4';
-
     /* Refresh the protection card to reflect connection change. */
     updateProtectionCard();
 }

@@ -16,7 +16,7 @@ const net = require('net');
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 
-const SOCKET_PATH = '/var/run/sentinel_gui.sock';
+const SOCKET_PATH = '/tmp/sentinel_gui.sock';
 const RECONNECT_MS = 3000;
 
 /* ── State ──────────────────────────────────────────────────────────────── */

@@ -15,9 +15,9 @@
 
 /* ── Socket path & permissions ──────────────────────────────────────────── */
 
-/* Default UNIX socket path.  Permissions set to 0666 so the local desktop
- * user running the Electron GUI can connect to the root-owned daemon. */
-#define ALERT_SOCKET_PATH "/var/run/sentinel_gui.sock"
+/* Default UNIX socket path.  Placed in /tmp so the desktop user's Electron
+ * GUI can connect without privilege.  Permissions set to 0666. */
+#define ALERT_SOCKET_PATH "/tmp/sentinel_gui.sock"
 #define ALERT_SOCKET_PERMS 0666
 
 /* Maximum number of simultaneous GUI client connections */
